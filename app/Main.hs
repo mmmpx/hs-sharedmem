@@ -11,7 +11,6 @@ import Control.Monad.Trans.Class (lift)
 import Data.Attoparsec.ByteString.Char8
 
 import Data.ByteString (ByteString)
-import Data.ByteString.Char8 (pack)
 
 import Data.HashMap.Strict (HashMap)
 import qualified Data.HashMap.Strict as HM
@@ -130,7 +129,7 @@ main :: IO ()
 main = do
   let seq = ISeq (SQ.empty)
   seqMV <- newMVar seq
-  let idx = (HM.singleton (pack "mySeq") seqMV) :: Index
+  let idx = (HM.singleton "mySeq" seqMV) :: Index
   idxMV <- newMVar idx
   let state = PState { index = idxMV }
   stateMV <- newMVar state
