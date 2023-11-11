@@ -1,13 +1,14 @@
+{-# LANGUAGE OverloadedStrings #-}
 module Main where
 
 import Control.Applicative
 import Control.Concurrent
 import Control.Concurrent.MVar
 import Control.Monad
-import Control.Monad.Trans.State.Lazy
+import Control.Monad.Trans.State.Lazy (StateT, runStateT, get)
 import Control.Monad.Trans.Class (lift)
 
-import qualified Data.Attoparsec.ByteString as AP
+import Data.Attoparsec.ByteString.Char8
 
 import Data.ByteString (ByteString)
 import Data.ByteString.Char8 (pack)
@@ -22,8 +23,8 @@ import Network.Socket
 import Network.Socket.ByteString (recvFrom)
 
 
-data ROp = Peek
-data WOp = Push ByteString | Pop
+data ROp = PeekL | PeekR
+data WOp = PushL ByteString | PushR ByteString | PopL | PopR
 data Op = IROp ROp | IWOp WOp
 
 
@@ -38,15 +39,24 @@ data Struct = ISeq (Seq ByteString)
   deriving Show
 
 instance ReadE Struct where
-  rExec (ISeq Empty) Peek = Nothing
-  rExec (ISeq (xs :|> x)) Peek = Just x
+  rExec (ISeq Empty) PeekL = Nothing
+  rExec (ISeq (x :<| _)) PeekL = Just x
+
+  rExec (ISeq Empty) PeekR = Nothing
+  rExec (ISeq (_ :|> x)) PeekR = Just x
 
 instance WriteE Struct where
-  wExec s@(ISeq Empty) Pop = (s, Nothing)
-  wExec s@(ISeq (xs :|> x)) Pop = (ISeq xs, Just x)
-  wExec s@(ISeq Empty) (Push x) = (ISeq $ SQ.singleton x, Nothing)
-  wExec s@(ISeq xs) (Push x) = (ISeq (x :<| xs), Nothing)
+  wExec (ISeq Empty) (PushL x) = (ISeq $ SQ.singleton x, Nothing)
+  wExec (ISeq xs) (PushL x) = (ISeq (x :<| xs), Nothing)
 
+  wExec (ISeq Empty) (PushR x) = (ISeq $ SQ.singleton x, Nothing)
+  wExec (ISeq xs) (PushR x) = (ISeq (xs :|> x), Nothing)
+
+  wExec s@(ISeq Empty) PopL = (s, Nothing)
+  wExec (ISeq (x :<| xs)) PopL = (ISeq xs, Just x)
+
+  wExec s@(ISeq Empty) PopR = (s, Nothing)
+  wExec (ISeq (xs :|> x)) PopR = (ISeq xs, Just x)
 
 type Index = HashMap ByteString (MVar Struct)
 
@@ -54,11 +64,14 @@ data PState = PState
   { index :: MVar Index }
 
 
-op :: AP.Parser Op
+op :: Parser Op
 op =
-      ((IWOp . Push) <$> (AP.string (pack "PUSH ") >> AP.takeWhile1 (\w -> w /= 10)))
-  <|> (AP.string (pack "POP") >> AP.word8 10 >> return (IWOp Pop))
-  <|> (AP.string (pack "PEEK") >> AP.word8 10 >> return (IROp Peek))
+      ((IWOp . PushL) <$> ("PUSHL " *> takeByteString))
+  <|> ((IWOp . PushR) <$> ("PUSHR " *> takeByteString))
+  <|> ("POPL" *> endOfInput *> return (IWOp PopL))
+  <|> ("POPR" *> endOfInput *> return (IWOp PopR))
+  <|> ("PEEKL" *> endOfInput *> return (IROp PeekL))
+  <|> ("PEEKR" *> endOfInput *> return (IROp PeekR))
 
 exec :: (MVar Struct) -> Op -> IO (Maybe ByteString)
 exec mv (IROp o) = do
@@ -78,7 +91,7 @@ awaitRecv sock = recvFrom sock 1232
 handleRecv :: (ByteString, SockAddr) -> StateT PState IO ()
 handleRecv (raw, addr) = do
   lift $ print raw
-  let (Right o) = AP.parseOnly op raw
+  let (Right o) = parseOnly op raw
   state <- get
   idx <- lift $ readMVar $ index state
   let (Just seqMV) = HM.lookup (pack "mySeq") idx
