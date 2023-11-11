@@ -11,6 +11,7 @@ import Control.Monad.Trans.Class (lift)
 import Data.Attoparsec.ByteString.Char8
 
 import Data.ByteString (ByteString)
+import Data.ByteString.Char8 (unpack)
 
 import Data.HashMap.Strict (HashMap)
 import qualified Data.HashMap.Strict as HM
@@ -28,6 +29,7 @@ data ROp =
     PeekL
   | PeekR
   | Get ByteString
+  | At Int
   deriving Show
 
 data WOp =
@@ -52,16 +54,24 @@ class WriteE a where
 
 
 data Struct =
-    ISeq (Seq ByteString)
+    IList [ByteString]
+  | ISeq (Seq ByteString)
   | IHashMap (HashMap ByteString ByteString)
   deriving Show
 
 data OnStruct a = On ByteString a
 
 instance ReadE Struct where
+  rExec (IList xs) (At i) = case (i < length xs) of
+    True -> Just $ xs !! i
+    False -> Nothing
+  rExec (IList []) PeekL = Nothing
+  rExec (IList (x:xs)) PeekL = Just x
+  rExec (IList []) PeekR = Nothing
+  rExec (IList xs) PeekR = Just $ last xs
+
   rExec (ISeq Empty) PeekL = Nothing
   rExec (ISeq (x :<| _)) PeekL = Just x
-
   rExec (ISeq Empty) PeekR = Nothing
   rExec (ISeq (_ :|> x)) PeekR = Just x
 
@@ -70,15 +80,19 @@ instance ReadE Struct where
   rExec _ _ = undefined
 
 instance WriteE Struct where
+  wExec (IList xs) (PushL x) = (IList (x:xs), Nothing)
+  wExec (IList xs) (PushR x) = (IList (xs ++ [x]), Nothing)
+  wExec s@(IList []) PopL = (s, Nothing)
+  wExec (IList (x:xs)) PopL = (IList xs, Just x)
+  wExec s@(IList []) PopR = (s, Nothing)
+  wExec (IList xs) PopR = (IList $ init xs, Just $ last xs)
+
   wExec (ISeq Empty) (PushL x) = (ISeq $ SQ.singleton x, Nothing)
   wExec (ISeq xs) (PushL x) = (ISeq (x :<| xs), Nothing)
-
   wExec (ISeq Empty) (PushR x) = (ISeq $ SQ.singleton x, Nothing)
   wExec (ISeq xs) (PushR x) = (ISeq (xs :|> x), Nothing)
-
   wExec s@(ISeq Empty) PopL = (s, Nothing)
   wExec (ISeq (x :<| xs)) PopL = (ISeq xs, Just x)
-
   wExec s@(ISeq Empty) PopR = (s, Nothing)
   wExec (ISeq (xs :|> x)) PopR = (ISeq xs, Just x)
 
@@ -103,6 +117,7 @@ op =
   <|> ( "PEEKR" *> endOfInput *> return (IROp PeekR) )
   <|> ( (\x y -> IWOp (Put x y)) <$> ("PUT " *> (takeWhile1 (not . isSpace))) <*> (" " *> takeByteString) )
   <|> ( (IROp . Get) <$> ("GET " *> takeByteString) )
+  <|> ( (IROp . At . read . unpack) <$> ("AT " *> (takeWhile1 isDigit) <* endOfInput) )
 
 on :: Parser (a -> OnStruct a)
 on = (On <$> ("ON " *> takeWhile1 (not . isSpace)) <* " ")
@@ -147,8 +162,10 @@ main = do
   seqMV <- newMVar seq
   let hm = IHashMap (HM.empty)
   hmMV <- newMVar hm
+  let l = IList []
+  lMV <- newMVar l
 
-  let idx = (HM.fromList [("mySeq", seqMV), ("myMap", hmMV)]) :: Index
+  let idx = (HM.fromList [("mySeq", seqMV), ("myMap", hmMV), ("myList", lMV)]) :: Index
   idxMV <- newMVar idx
 
   let state = PState { index = idxMV }
