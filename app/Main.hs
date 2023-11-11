@@ -23,9 +23,22 @@ import Network.Socket
 import Network.Socket.ByteString (recvFrom)
 
 
-data ROp = PeekL | PeekR
-data WOp = PushL ByteString | PushR ByteString | PopL | PopR
-data Op = IROp ROp | IWOp WOp
+data ROp =
+    PeekL
+  | PeekR
+  deriving Show
+
+data WOp =
+    PushL ByteString
+  | PushR ByteString
+  | PopL
+  | PopR
+  deriving Show
+
+data Op =
+    IROp ROp
+  | IWOp WOp
+  deriving Show
 
 
 class ReadE a where
@@ -37,6 +50,8 @@ class WriteE a where
 
 data Struct = ISeq (Seq ByteString)
   deriving Show
+
+data OnStruct a = On ByteString a
 
 instance ReadE Struct where
   rExec (ISeq Empty) PeekL = Nothing
@@ -58,6 +73,7 @@ instance WriteE Struct where
   wExec s@(ISeq Empty) PopR = (s, Nothing)
   wExec (ISeq (xs :|> x)) PopR = (ISeq xs, Just x)
 
+
 type Index = HashMap ByteString (MVar Struct)
 
 data PState = PState
@@ -73,6 +89,13 @@ op =
   <|> ("PEEKL" *> endOfInput *> return (IROp PeekL))
   <|> ("PEEKR" *> endOfInput *> return (IROp PeekR))
 
+on :: Parser (a -> OnStruct a)
+on = (On <$> ("ON " *> takeWhile1 (not . isSpace)) <* " ")
+
+onop :: Parser (OnStruct Op)
+onop = ($) <$> on <*> op
+
+
 exec :: (MVar Struct) -> Op -> IO (Maybe ByteString)
 exec mv (IROp o) = do
   x <- readMVar mv
@@ -85,22 +108,23 @@ exec mv (IWOp o) = do
   return r
 
 
-awaitRecv :: Socket -> IO (ByteString, SockAddr)
-awaitRecv sock = recvFrom sock 1232
+onRecv :: Socket -> IO (ByteString, SockAddr)
+onRecv sock = recvFrom sock 1232
 
-handleRecv :: (ByteString, SockAddr) -> StateT PState IO ()
-handleRecv (raw, addr) = do
+handle :: (ByteString, SockAddr) -> StateT PState IO ()
+handle (raw, addr) = do
   lift $ print raw
-  let (Right o) = parseOnly op raw
+  let (Right (On sn o)) = parseOnly onop raw
   state <- get
   idx <- lift $ readMVar $ index state
-  let (Just seqMV) = HM.lookup (pack "mySeq") idx
-  r <- lift $ exec seqMV o
-  lift $ print r
+  let s = HM.lookup sn idx
+  case s of
+    Nothing -> lift $ print "not found"
+    Just (js) -> (lift $ exec js o) >>= (lift . print)
   return ()
 
 listenR :: Socket -> StateT PState IO ()
-listenR sock = forever ((lift $ awaitRecv sock) >>= handleRecv)
+listenR sock = forever ((lift $ onRecv sock) >>= handle)
 
 main :: IO ()
 main = do
