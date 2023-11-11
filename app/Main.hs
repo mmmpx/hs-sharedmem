@@ -15,11 +15,13 @@ import Data.ByteString (ByteString)
 import Data.HashMap.Strict (HashMap)
 import qualified Data.HashMap.Strict as HM
 
+import Data.Maybe
+
 import Data.Sequence (Seq (..))
 import qualified Data.Sequence as SQ
 
 import Network.Socket
-import Network.Socket.ByteString (recvFrom)
+import Network.Socket.ByteString (recvFrom, sendAllTo)
 
 
 data ROp =
@@ -124,20 +126,20 @@ exec mv (IWOp o) = do
 onRecv :: Socket -> IO (ByteString, SockAddr)
 onRecv sock = recvFrom sock 1232
 
-handle :: (ByteString, SockAddr) -> StateT PState IO ()
-handle (raw, addr) = do
+handle :: Socket -> (ByteString, SockAddr) -> StateT PState IO ()
+handle sock (raw, addr) = do
   lift $ print raw
   let (Right (On sn o)) = parseOnly onop raw
   state <- get
   idx <- lift $ readMVar $ index state
   let s = HM.lookup sn idx
   case s of
-    Nothing -> lift $ print "not found"
-    Just (js) -> (lift $ exec js o) >>= (lift . print)
+    Nothing -> lift $ sendAllTo sock "[NOT FOUND]" addr
+    Just (js) -> lift ((exec js o) >>= ((flip (sendAllTo sock)) addr . (fromMaybe "(nil)")))
   return ()
 
 listenR :: Socket -> StateT PState IO ()
-listenR sock = forever ((lift $ onRecv sock) >>= handle)
+listenR sock = forever ((lift $ onRecv sock) >>= handle sock)
 
 main :: IO ()
 main = do
