@@ -25,6 +25,7 @@ import Network.Socket.ByteString (recvFrom)
 data ROp =
     PeekL
   | PeekR
+  | Get ByteString
   deriving Show
 
 data WOp =
@@ -32,6 +33,7 @@ data WOp =
   | PushR ByteString
   | PopL
   | PopR
+  | Put ByteString ByteString
   deriving Show
 
 data Op =
@@ -47,7 +49,9 @@ class WriteE a where
   wExec :: a -> WOp -> (a, Maybe ByteString)
 
 
-data Struct = ISeq (Seq ByteString)
+data Struct =
+    ISeq (Seq ByteString)
+  | IHashMap (HashMap ByteString ByteString)
   deriving Show
 
 data OnStruct a = On ByteString a
@@ -58,6 +62,10 @@ instance ReadE Struct where
 
   rExec (ISeq Empty) PeekR = Nothing
   rExec (ISeq (_ :|> x)) PeekR = Just x
+
+  rExec (IHashMap m) (Get k) = HM.lookup k m
+
+  rExec _ _ = undefined
 
 instance WriteE Struct where
   wExec (ISeq Empty) (PushL x) = (ISeq $ SQ.singleton x, Nothing)
@@ -72,6 +80,10 @@ instance WriteE Struct where
   wExec s@(ISeq Empty) PopR = (s, Nothing)
   wExec (ISeq (xs :|> x)) PopR = (ISeq xs, Just x)
 
+  wExec (IHashMap m) (Put k v) = (IHashMap $ HM.insert k v m, Nothing)
+
+  wExec _ _ = undefined
+
 
 type Index = HashMap ByteString (MVar Struct)
 
@@ -81,12 +93,14 @@ data PState = PState
 
 op :: Parser Op
 op =
-      ((IWOp . PushL) <$> ("PUSHL " *> takeByteString))
-  <|> ((IWOp . PushR) <$> ("PUSHR " *> takeByteString))
-  <|> ("POPL" *> endOfInput *> return (IWOp PopL))
-  <|> ("POPR" *> endOfInput *> return (IWOp PopR))
-  <|> ("PEEKL" *> endOfInput *> return (IROp PeekL))
-  <|> ("PEEKR" *> endOfInput *> return (IROp PeekR))
+      ( (IWOp . PushL) <$> ("PUSHL " *> takeByteString) )
+  <|> ( (IWOp . PushR) <$> ("PUSHR " *> takeByteString) )
+  <|> ( "POPL" *> endOfInput *> return (IWOp PopL) )
+  <|> ( "POPR" *> endOfInput *> return (IWOp PopR) )
+  <|> ( "PEEKL" *> endOfInput *> return (IROp PeekL) )
+  <|> ( "PEEKR" *> endOfInput *> return (IROp PeekR) )
+  <|> ( (\x y -> IWOp (Put x y)) <$> ("PUT " *> (takeWhile1 (not . isSpace))) <*> (" " *> takeByteString) )
+  <|> ( (IROp . Get) <$> ("GET " *> takeByteString) )
 
 on :: Parser (a -> OnStruct a)
 on = (On <$> ("ON " *> takeWhile1 (not . isSpace)) <* " ")
@@ -129,10 +143,14 @@ main :: IO ()
 main = do
   let seq = ISeq (SQ.empty)
   seqMV <- newMVar seq
-  let idx = (HM.singleton "mySeq" seqMV) :: Index
+  let hm = IHashMap (HM.empty)
+  hmMV <- newMVar hm
+
+  let idx = (HM.fromList [("mySeq", seqMV), ("myMap", hmMV)]) :: Index
   idxMV <- newMVar idx
+
   let state = PState { index = idxMV }
-  stateMV <- newMVar state
+  --stateMV <- newMVar state
 
   addr <- head <$> getAddrInfo Nothing (Just "127.0.0.1") (Just "7000")
   sock <- socket (addrFamily addr) Datagram defaultProtocol
