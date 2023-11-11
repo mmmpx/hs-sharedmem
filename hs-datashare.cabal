@@ -70,6 +70,7 @@ executable hs-datashare
                     , bytestring
                     , network
                     , attoparsec
+                    , transformers
 
     -- Directories containing source files.
     hs-source-dirs:   app
