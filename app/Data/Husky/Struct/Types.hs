@@ -19,6 +19,6 @@ data MVarOp c =
 exMVO :: MVarOp c -> MVar c -> IO (Maybe ByteString)
 exMVO (MkR f) m = f <$> readMVar m
 exMVO (MkW f) m = do
-    (x2, r) <- f <$> takeMVar m
-    putMVar m x2 >> return r
+  (x2, r) <- f <$> takeMVar m
+  putMVar m x2 >> return r
 
